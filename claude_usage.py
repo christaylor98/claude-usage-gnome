@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -37,6 +38,8 @@ from datetime import datetime, timezone
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 OAUTH_BETA = "oauth-2025-04-20"
+OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+OAUTH_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 
 # The endpoint refuses to play nicely unless the User-Agent looks like Claude
 # Code. We try to read the real installed version (see detect_claude_version);
@@ -162,6 +165,66 @@ def detect_claude_version() -> str:
         return FALLBACK_CLAUDE_VERSION
     m = re.search(r"(\d+\.\d+\.\d+)", out)
     return m.group(1) if m else FALLBACK_CLAUDE_VERSION
+
+
+# ---------------------------------------------------------------------------
+# Token refresh
+# ---------------------------------------------------------------------------
+
+def try_refresh_token() -> bool:
+    """Exchange the stored refresh token for a new access token.
+
+    Updates ~/.claude/.credentials.json in-place. Returns True on success.
+    """
+    try:
+        with open(CREDENTIALS_PATH, "r", encoding="utf-8") as fh:
+            creds = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    oauth = creds.get("claudeAiOauth") or {}
+    refresh_tok = oauth.get("refreshToken")
+    if not refresh_tok:
+        return False
+
+    payload = urllib.parse.urlencode({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_tok,
+        "client_id": OAUTH_CLIENT_ID,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        OAUTH_TOKEN_URL,
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return False
+
+    new_token = result.get("access_token")
+    if not new_token:
+        return False
+
+    oauth["accessToken"] = new_token
+    if result.get("refresh_token"):
+        oauth["refreshToken"] = result["refresh_token"]
+    expires_in = result.get("expires_in")
+    if expires_in:
+        oauth["expiresAt"] = int((time.time() + int(expires_in)) * 1000)
+    creds["claudeAiOauth"] = oauth
+
+    try:
+        tmp = CREDENTIALS_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(creds, fh, indent=2)
+        os.replace(tmp, CREDENTIALS_PATH)
+        return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -521,13 +584,25 @@ def main(argv=None) -> int:
                 time.sleep(interval)
             except UsageError as exc:
                 msg = str(exc)
-                print(f"{C.RED if use_colour else ''}{msg}{C.RESET if use_colour else ''}",
-                      file=sys.stderr)
-                if "429" in msg:
+                if "401" in msg:
+                    dim = C.DIM if use_colour else ""
+                    rst = C.RESET if use_colour else ""
+                    sys.stderr.write(f"{dim}token expired — refreshing…{rst}\n")
+                    if try_refresh_token():
+                        sys.stderr.write(f"{dim}token refreshed, retrying{rst}\n")
+                        continue  # immediate retry with new token
+                    sys.stderr.write(
+                        f"{C.YELLOW if use_colour else ''}refresh failed — "
+                        f"run `claude` to renew manually{rst}\n"
+                    )
+                    time.sleep(interval)
+                elif "429" in msg:
                     backoff = min(backoff * 2, 900)  # cap 15 min
-                    print(f"sleeping {backoff}s before retry", file=sys.stderr)
+                    sys.stderr.write(f"429 — sleeping {backoff}s before retry\n")
                     time.sleep(backoff)
                 else:
+                    print(f"{C.RED if use_colour else ''}{msg}{C.RESET if use_colour else ''}",
+                          file=sys.stderr)
                     time.sleep(interval)
     except UsageError as exc:
         print(f"{C.RED if use_colour else ''}error:{C.RESET if use_colour else ''} {exc}",
