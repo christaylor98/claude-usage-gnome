@@ -84,6 +84,12 @@ Also requires the **AppIndicator Support** GNOME extension.
 ./claude_indicator.py
 ```
 
+If the indicator gets stuck showing an error after a token expiry, restart it — it doesn't always pick up a freshly issued OAuth token without a full restart:
+
+```
+pkill -f claude_indicator.py && ./claude_indicator.py &
+```
+
 To autostart, create `~/.config/autostart/claude-usage.desktop`:
 
 ```ini
