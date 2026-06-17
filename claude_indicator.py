@@ -114,17 +114,10 @@ def _panel_label(data: dict | None, history: list[dict]) -> str:
     if worst is None:
         return "–"
     key, util, resets_at = worst
-    col = cu.blowout_colour(history, key, util, resets_at)
-    if col == cu.C.RED:
-        icon = "🔴"
-    elif col == cu.C.ORANGE:
-        icon = "🟠"
-    else:
-        icon = "🟢"
     elapsed = cu.elapsed_fraction(key, resets_at)
     hw = cu.pace_headroom(util, elapsed)
     hw_str = f" {hw:+.0f}%" if hw is not None else ""
-    return f"{icon} {util:.0f}%{hw_str}"
+    return f"{util:.0f}%{hw_str}"
 
 
 def _pace_icon(data: dict | None, history: list[dict]) -> str:
