@@ -340,32 +340,35 @@ def burn_windows_for(key: str) -> list:
     return BURN_WINDOWS_SESSION if key == "five_hour" else BURN_WINDOWS_WEEKLY
 
 
-def blowout_colour(history: list[dict], key: str, util: float, resets_at: str) -> str:
-    """Bar fill colour driven by burndown trajectory.
+def pace_headroom(util: float, elapsed_frac: float | None) -> float | None:
+    """How far ahead of (positive) or behind (negative) pace we are.
 
-    Uses the shortest lookback window that has data (most reactive).
-    Returns ORANGE (will blow, >1h away), RED (will blow <=1h or util>=80%),
-    or BLUE (safe).
+    Returns 100 - projected, where projected = util / elapsed_frac.
+    Positive → slack, can burn faster.  Negative → over pace, must slow down.
+    Returns None when elapsed is too small to be meaningful.
     """
-    if util >= HIGH_THRESHOLD:
+    if not elapsed_frac or elapsed_frac < 0.02:
+        return None
+    return 100.0 - (util / elapsed_frac)
+
+
+def blowout_colour(history: list[dict], key: str, util: float, resets_at: str) -> str:
+    """Colour based on pace: current utilisation vs fraction of window elapsed.
+
+    Projects final utilisation linearly: projected = util / elapsed_fraction.
+    - GREEN  projected <  100% (under pace, will finish within budget)
+    - ORANGE projected >= 100% (over pace, on track to blow out)
+    - RED    projected >= 120% (significantly over pace, clear blowout)
+    """
+    elapsed = elapsed_fraction(key, resets_at)
+    if not elapsed:
+        return C.GREEN
+    projected = util / elapsed
+    if projected >= 120:
         return C.RED
-    bw = list(reversed(burn_windows_for(key)))  # shortest first
-    for _, wsecs in bw:
-        r = burn_rate(history, key, wsecs)
-        if r is None or r <= 0:
-            continue
-        remaining = 100.0 - util
-        burn_secs = remaining / r * 3600
-        try:
-            target = parse_ts(resets_at)
-            reset_secs = (target - datetime.now(timezone.utc)).total_seconds()
-            if burn_secs >= reset_secs:
-                return C.BLUE  # resets before blowout
-        except (ValueError, TypeError):
-            pass
-        # Will blow: orange if >1h away, red if <=1h
-        return C.RED if burn_secs <= 3600 else C.ORANGE
-    return C.BLUE
+    if projected >= 100:
+        return C.ORANGE
+    return C.GREEN
 
 
 def render_burn_line(
@@ -505,10 +508,16 @@ def render(data: dict, use_colour: bool, version: str, history: list[dict] | Non
         elapsed = elapsed_fraction(key, resets_at)
         bar_col = blowout_colour(history or [], key, util, resets_at)
         bar = render_bar(util, elapsed, width, use_colour, bar_col if use_colour else None)
-        pct_colour = C.RED if util >= HIGH_THRESHOLD else (bar_col if bar_col != C.BLUE else C.GREEN)
+        pct_colour = bar_col
         pct = f"{c(pct_colour)}{util:5.1f}%{c(C.RESET)}"
+        hw = pace_headroom(util, elapsed)
+        if hw is not None:
+            hw_col = C.GREEN if hw >= 0 else C.RED
+            hw_str = f"  {c(hw_col)}{hw:+.0f}%{c(C.RESET)}"
+        else:
+            hw_str = ""
         reset = f"{c(C.DIM)}resets {fmt_countdown(resets_at)}{c(C.RESET)}"
-        lines.append(f"  {label:<14} {bar} {pct}  {reset}")
+        lines.append(f"  {label:<14} {bar} {pct}{hw_str}  {reset}")
         burn = render_burn_line(history or [], key, util, resets_at, use_colour)
         if burn:
             lines.append(burn)
@@ -531,8 +540,10 @@ def render(data: dict, use_colour: bool, version: str, history: list[dict] | Non
     if use_colour:
         lines.append("")
         lines.append(
-            f"  {c(C.WHITE)}|{c(C.RESET)}{c(C.DIM)} = time elapsed in window  "
-            f"· {c(C.RESET)}{c(C.RED)}red{c(C.RESET)}{c(C.DIM)} = >= {HIGH_THRESHOLD:.0f}%{c(C.RESET)}"
+            f"  {c(C.WHITE)}|{c(C.RESET)}{c(C.DIM)} = time elapsed  "
+            f"· {c(C.RESET)}{c(C.GREEN)}green{c(C.RESET)}{c(C.DIM)} = on pace  "
+            f"{c(C.ORANGE)}orange{c(C.RESET)}{c(C.DIM)} = over pace  "
+            f"{c(C.RED)}red{c(C.RESET)}{c(C.DIM)} = blowing out{c(C.RESET)}"
         )
     return "\n".join(lines)
 
