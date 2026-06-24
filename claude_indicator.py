@@ -164,7 +164,7 @@ def _pango_bar(util: float, elapsed: float | None, width: int, fill_hex: str) ->
         if is_marker:
             cells.append(f'<span foreground="{_HEX_WHITE}">|</span>')
         elif i < filled:
-            cells.append(f'<span background="{fill_hex}"> </span>')
+            cells.append(f'<span foreground="{fill_hex}" background="{fill_hex}">█</span>')
         else:
             cells.append(f'<span foreground="{_HEX_GREY}">─</span>')
     return "".join(cells)
