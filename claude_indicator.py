@@ -43,6 +43,21 @@ ICONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
 # Widest possible label — used as the width hint so the panel slot doesn't jump
 LABEL_GUIDE = "🔴 100% -200%"
 
+# Pango hex colors for the rich click menu
+_HEX_GREEN  = "#00cc66"
+_HEX_ORANGE = "#ff8c00"
+_HEX_RED    = "#ff4444"
+_HEX_BLUE   = "#4499ff"
+_HEX_GREY   = "#555555"
+_HEX_WHITE  = "#cccccc"
+_HEX_DIM    = "#999999"
+
+
+
+def _col_hex(ansi: str) -> str:
+    """Map a C.* ANSI constant to a Pango hex color."""
+    return {cu.C.GREEN: _HEX_GREEN, cu.C.ORANGE: _HEX_ORANGE, cu.C.RED: _HEX_RED}.get(ansi, _HEX_BLUE)
+
 
 # ---------------------------------------------------------------------------
 # Token handling
@@ -136,6 +151,39 @@ def _pace_icon(data: dict | None, history: list[dict]) -> str:
     return "claude-usage-1"
 
 
+def _pango_bar(util: float, elapsed: float | None, width: int, fill_hex: str) -> str:
+    """Progress bar as Pango markup — colored background spaces for fill, ─ for empty."""
+    util = max(0.0, min(100.0, util))
+    filled = int(round((util / 100.0) * width))
+    marker_pos = None
+    if elapsed is not None:
+        marker_pos = min(width - 1, int(round(elapsed * width)))
+    cells = []
+    for i in range(width):
+        is_marker = (i == marker_pos)
+        if is_marker:
+            cells.append(f'<span foreground="{_HEX_WHITE}">|</span>')
+        elif i < filled:
+            cells.append(f'<span background="{fill_hex}"> </span>')
+        else:
+            cells.append(f'<span foreground="{_HEX_GREY}">─</span>')
+    return "".join(cells)
+
+
+
+def _make_mono_item(markup: str) -> Gtk.MenuItem:
+    """Display-only menu item with a left-aligned monospace label using Pango markup."""
+    item = Gtk.MenuItem()
+    label = Gtk.Label()
+    label.set_use_markup(True)
+    label.set_markup(f'<span font_family="monospace">{markup}</span>')
+    label.set_halign(Gtk.Align.START)
+    label.set_margin_start(4)
+    label.set_margin_end(8)
+    item.add(label)
+    return item
+
+
 def _tooltip(data: dict | None, history: list[dict], last_error: str | None = None) -> str:
     if data is None:
         lines = ["Claude usage: unavailable"]
@@ -184,14 +232,14 @@ class ClaudeIndicator:
         self._history: list[dict] = []
         self._last_error: str | None = None
 
-        self._ind = AyatanaAppIndicator3.Indicator.new_with_path(
+        self._ind = AyatanaAppIndicator3.Indicator.new(
             APP_ID,
             ICON_NAME,
             AyatanaAppIndicator3.IndicatorCategory.APPLICATION_STATUS,
-            ICONS_DIR,
         )
         self._ind.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
         self._ind.set_label("…", LABEL_GUIDE)
+
 
         self._menu = Gtk.Menu()
         self._detail_items: list[Gtk.Widget] = []
@@ -237,7 +285,20 @@ class ClaudeIndicator:
             self._menu.append(widget)
             self._detail_items.append(widget)
 
+        def add_mono(markup: str) -> None:
+            add(_make_mono_item(markup))
+
+        bar_width = 28
+
         if self._data:
+            now = time.strftime("%H:%M:%S")
+            version = cu.detect_claude_version()
+            add_mono(
+                f'<b>Claude usage</b>'
+                f'<span foreground="{_HEX_DIM}"> · {now} · UA claude-code/{version}</span>'
+            )
+            add_mono("")
+
             for key, win_label in cu.WINDOWS:
                 win = self._data.get(key)
                 if not win:
@@ -247,32 +308,30 @@ class ClaudeIndicator:
                     continue
                 resets_at = win.get("resets_at", "")
                 elapsed = cu.elapsed_fraction(key, resets_at)
+                bar_col = cu.blowout_colour(self._history, key, util, resets_at)
+                fill_hex = _col_hex(bar_col)
+
+                bar = _pango_bar(util, elapsed, bar_width, fill_hex)
+                pct = f'<span foreground="{fill_hex}">{util:5.1f}%</span>'
+
                 hw = cu.pace_headroom(util, elapsed)
-                hw_str = f"   {hw:+.0f}% vs pace" if hw is not None else ""
+                if hw is not None:
+                    hw_hex = _HEX_GREEN if hw >= 0 else _HEX_RED
+                    hw_str = f'  <span foreground="{hw_hex}">{hw:+.0f}%</span>'
+                else:
+                    hw_str = ""
 
-                header = Gtk.MenuItem(
-                    label=f"{win_label}:  {util:.1f}%{hw_str}   resets {cu.fmt_countdown(resets_at)}"
-                )
-                header.set_sensitive(False)
-                add(header)
+                reset = f'<span foreground="{_HEX_DIM}">resets {cu.fmt_countdown(resets_at)}</span>'
+                label_col = f'<span foreground="{_HEX_DIM}">{win_label}</span>'
 
-                for wl, wsecs in cu.burn_windows_for(key):
-                    r = cu.burn_rate(self._history, key, wsecs)
-                    if r is None:
-                        continue
-                    ro = cu.fmt_runout(r, util, resets_at)
-                    sub = Gtk.MenuItem(label=f"    {wl}:  {r:+.1f}%/h  →  {ro}")
-                    sub.set_sensitive(False)
-                    add(sub)
+                add_mono(f'  {bar}  {pct}{hw_str}  {label_col}  {reset}')
 
-                add(Gtk.SeparatorMenuItem())
         else:
             item = Gtk.MenuItem(label="⚠  Usage unavailable")
             item.set_sensitive(False)
             add(item)
             if self._last_error:
                 is_auth = any(k in self._last_error for k in ("401", "token", "Token", "auth", "login"))
-                # Truncate long errors to one readable line
                 short = self._last_error.split("\n")[0][:80]
                 reason = Gtk.MenuItem(label=f"   {short}")
                 reason.set_sensitive(False)
@@ -285,7 +344,8 @@ class ClaudeIndicator:
                     fix = Gtk.MenuItem(label="   → Will retry automatically")
                     fix.set_sensitive(False)
                     add(fix)
-            add(Gtk.SeparatorMenuItem())
+
+        add(Gtk.SeparatorMenuItem())
 
         refresh = Gtk.MenuItem(label="Refresh now")
         refresh.connect("activate", self._on_refresh_clicked)
