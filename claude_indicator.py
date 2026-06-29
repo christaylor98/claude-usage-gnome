@@ -41,7 +41,7 @@ APP_ID = "claude-usage"
 ICON_NAME = "claude-usage"
 ICONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
 # Widest possible label — used as the width hint so the panel slot doesn't jump
-LABEL_GUIDE = "🔴 -200%"
+LABEL_GUIDE = "🔴 100% -200%"
 
 # Pango hex colors for the rich click menu
 _HEX_GREEN  = "#00cc66"
@@ -131,9 +131,8 @@ def _panel_label(data: dict | None, history: list[dict]) -> str:
     key, util, resets_at = worst
     elapsed = cu.elapsed_fraction(key, resets_at)
     hw = cu.pace_headroom(util, elapsed)
-    if hw is not None:
-        return f"{hw:+.0f}%"
-    return f"{util:.0f}%"
+    hw_str = f" {hw:+.0f}%" if hw is not None else ""
+    return f"{util:.0f}%{hw_str}"
 
 
 def _pace_icon(data: dict | None, history: list[dict]) -> str:
